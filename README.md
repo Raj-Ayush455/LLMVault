@@ -20,11 +20,11 @@ Requires Python 3.12 or newer.
 
 1. Run `uv sync` to create the virtual environment and install the dependencies from `pyproject.toml`.
 2. Copy `.env.example` to `.env` and set `ADMIN_API_KEY`, `PRIMARY_BASE_URL`, and `PRIMARY_API_KEY`. Never commit `.env`.
-3. Set `ALLOWED_MODELS` to the comma-separated model IDs you intend callers to use. The default is `gpt-4o-mini`.
+3. Set `ALLOWED_MODELS` to the comma-separated model IDs you intend callers to use. The default is `gemini-2.5-flash`.
 4. Optionally configure `MODEL_PRICING_USD_PER_1M` with the provider's current input/output rates, in USD per million tokens. For example:
 
    ```text
-   {"gpt-4o-mini":{"input":0.15,"output":0.60}}
+   {"gemini-2.5-flash":{"input":0.15,"output":0.60}}
    ```
 
 5. Start the service with `uvicorn app.main:app --reload`.
@@ -49,7 +49,7 @@ Save the returned `api_key` securely; it will not be shown again. Call the gatew
 ```powershell
 $virtualKey = $key.api_key
 $payload = @{
-  model = "gpt-4o-mini"
+  model = "gemini-2.5-flash"
   messages = @(@{ role = "user"; content = "Say hello in one sentence." })
 } | ConvertTo-Json -Depth 8
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/v1/chat/completions `
@@ -78,7 +78,7 @@ Use a persistent PostgreSQL service and set these environment variables in the h
 
 - `DATABASE_URL` - persistent PostgreSQL URL
 - `ADMIN_API_KEY` - long random secret
-- `PRIMARY_BASE_URL`, `PRIMARY_API_KEY`, and `ALLOWED_MODELS`
+- `PRIMARY_BASE_URL` (default: Gemini OpenAI-compatible endpoint), `PRIMARY_API_KEY` (Gemini API key), and `ALLOWED_MODELS`
 - Optional fallback values and `MODEL_PRICING_USD_PER_1M`
 
 Configure the host's health check to `GET /health`. After deploy, create a virtual key through `POST /admin/keys`, make a sample call, and submit the resulting HTTPS base URL plus the sample request. A live URL is not included in this source workspace: deployment requires a hosting account, database, and real provider credentials.
@@ -90,7 +90,7 @@ Railway currently offers a $0 Free plan with a monthly usage allowance and no cr
 1. Push this source to a GitHub repository. The `.gitignore` excludes `.env` and local database files.
 2. Create a Railway project from that repository. Railway will build the included `Dockerfile`.
 3. Add a PostgreSQL service to the same project. Set the app's `DATABASE_URL` to the Postgres service's generated `DATABASE_URL` reference.
-4. Set `ADMIN_API_KEY`, `PRIMARY_BASE_URL`, `PRIMARY_API_KEY`, `ALLOWED_MODELS`, and optionally the fallback and pricing values in the app service variables. Do not place secrets in the repository.
+4. Set `ADMIN_API_KEY`, `PRIMARY_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta/openai`), `PRIMARY_API_KEY` (your Gemini API key from [aistudio.google.com](https://aistudio.google.com)), `ALLOWED_MODELS` (`gemini-2.5-flash`), and optionally the fallback and pricing values in the app service variables. Do not place secrets in the repository.
 5. Set the app health check to `/health`, generate a public domain, and verify the first `/health` request and one provider call after deployment.
 
 New Railway accounts start with a trial; accounts on its limited trial may have restricted outbound networking. Complete Railway's account/GitHub verification if the service cannot reach the configured LLM provider. The free monthly allowance is small, so a handful of assessment requests should be the intended workload; monitor Railway usage and note that the LLM provider may bill separately.

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     admin_api_key: str = ""
     primary_base_url: str = ""
     primary_api_key: str = ""
-    allowed_models: str = "gpt-4o-mini"
+    allowed_models: str = "gemini-2.5-flash"
     fallback_base_url: str = ""
     fallback_api_key: str = ""
     fallback_model: str = ""
