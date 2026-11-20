@@ -20,11 +20,11 @@ Requires Python 3.12 or newer.
 
 1. Run `uv sync` to create the virtual environment and install the dependencies from `pyproject.toml`.
 2. Copy `.env.example` to `.env` and set `ADMIN_API_KEY`, `PRIMARY_BASE_URL`, and `PRIMARY_API_KEY`. Never commit `.env`.
-3. Set `ALLOWED_MODELS` to the comma-separated model IDs you intend callers to use. The default is `gemini-2.5-flash`.
+3. Set `ALLOWED_MODELS` to the comma-separated model IDs you intend callers to use. The default is `gemini-3.6-flash`.
 4. Optionally configure `MODEL_PRICING_USD_PER_1M` with the provider's current input/output rates, in USD per million tokens. For example:
 
    ```text
-   {"gemini-2.5-flash":{"input":0.15,"output":0.60}}
+   {"gemini-3.6-flash":{"input":0.15,"output":0.60}}
    ```
 
 5. Start the service with `uvicorn app.main:app --reload`.
@@ -49,7 +49,7 @@ Save the returned `api_key` securely; it will not be shown again. Call the gatew
 ```powershell
 $virtualKey = $key.api_key
 $payload = @{
-  model = "gemini-2.5-flash"
+  model = "gemini-3.6-flash"
   messages = @(@{ role = "user"; content = "Say hello in one sentence." })
 } | ConvertTo-Json -Depth 8
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/v1/chat/completions `
@@ -90,7 +90,7 @@ Railway currently offers a $0 Free plan with a monthly usage allowance and no cr
 1. Push this source to a GitHub repository. The `.gitignore` excludes `.env` and local database files.
 2. Create a Railway project from that repository. Railway will build the included `Dockerfile`.
 3. Add a PostgreSQL service to the same project. Set the app's `DATABASE_URL` to the Postgres service's generated `DATABASE_URL` reference.
-4. Set `ADMIN_API_KEY`, `PRIMARY_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta/openai`), `PRIMARY_API_KEY` (your Gemini API key from [aistudio.google.com](https://aistudio.google.com)), `ALLOWED_MODELS` (`gemini-2.5-flash`), and optionally the fallback and pricing values in the app service variables. Do not place secrets in the repository.
+4. Set `ADMIN_API_KEY`, `PRIMARY_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta/openai`), `PRIMARY_API_KEY` (your Gemini API key from [aistudio.google.com](https://aistudio.google.com)), `ALLOWED_MODELS` (`gemini-3.6-flash`), and optionally the fallback and pricing values in the app service variables. Do not place secrets in the repository.
 5. Set the app health check to `/health`, generate a public domain, and verify the first `/health` request and one provider call after deployment.
 
 New Railway accounts start with a trial; accounts on its limited trial may have restricted outbound networking. Complete Railway's account/GitHub verification if the service cannot reach the configured LLM provider. The free monthly allowance is small, so a handful of assessment requests should be the intended workload; monitor Railway usage and note that the LLM provider may bill separately.
