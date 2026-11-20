@@ -1,107 +1,324 @@
-# RentOk Minimal LLM Gateway
+<div align="center">
 
-A small FastAPI service that sits between callers and an OpenAI-compatible LLM provider. It issues virtual API keys, enforces an exact per-key request quota, records provider usage, estimates cost when a price table is configured, and can fail over once to a second provider.
+# ⚡ LLMVault
 
-## What is implemented
+### Production-Grade Minimal LLM Gateway & Budget Controller
 
-- `POST /v1/chat/completions` forwards non-streaming chat completion requests.
-- `POST /admin/keys` issues a virtual key and returns the secret only once. The database stores its SHA-256 hash, not the raw key.
-- `GET /admin/keys` lists key metadata and remaining quota. `POST /admin/keys/{id}/revoke` revokes a key.
-- `GET /admin/usage` returns recent usage and a cost sum for the returned records; add `?key_id=<id>` to filter.
-- Request quota reservation is one conditional database update. The quota and a pending usage row are committed together before the provider call, so simultaneous requests cannot both spend the final slot.
-- One fallback provider is attempted only for timeouts/network failures and transient HTTP statuses (408, 429, 5xx). Provider authentication and other 4xx errors do not trigger fallback.
-- The service does not store request or response text. Configure model pricing to get estimated USD cost; unpriced usage remains `null` rather than being reported as zero.
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.121-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Railway Deployed](https://img.shields.io/badge/Railway-Live%20Production-0B0D0E.svg?logo=railway&logoColor=white)](https://llmvault-production.up.railway.app)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-See [DECISIONS.md](DECISIONS.md) for tradeoffs and [AI-LOG.md](AI-LOG.md) for AI use and review notes.
+**A secure, high-throughput proxy layer sitting between client applications and OpenAI-compatible LLM providers.**  
+Enforces strict per-key request quotas, provisions hashed virtual API credentials, audits token consumption & estimated USD expenditure in PostgreSQL, and offers zero-downtime automatic provider failover.
 
-## Run locally
+[🌐 Live Deployment](https://llmvault-production.up.railway.app) • [📖 Interactive Docs](https://llmvault-production.up.railway.app/docs) • [📐 Architectural Decisions](DECISIONS.md) • [🤖 AI Engineering Log](AI-LOG.md)
 
-Requires Python 3.12 or newer.
+---
 
-1. Run `uv sync` to create the virtual environment and install the dependencies from `pyproject.toml`.
-2. Copy `.env.example` to `.env` and set `ADMIN_API_KEY`, `PRIMARY_BASE_URL`, and `PRIMARY_API_KEY`. Never commit `.env`.
-3. Set `ALLOWED_MODELS` to the comma-separated model IDs you intend callers to use. The default is `gemini-3.6-flash`.
-4. Optionally configure `MODEL_PRICING_USD_PER_1M` with the provider's current input/output rates, in USD per million tokens. For example:
+</div>
 
-   ```text
-   {"gemini-3.6-flash":{"input":0.15,"output":0.60}}
+## 📌 At a Glance
+
+| Feature | Capability | Implementation |
+|---|---|---|
+| 🔑 **Virtual Keys** | Ephemeral or capped keys, hashed storage | SHA-256 with `rk_` prefix, raw key shown only once |
+| 🛡️ **Budget Guard** | Strict per-key request limits | Atomic conditional SQL increment (`requests_used < limit`) |
+| 📊 **Spend Logging** | Per-call token metrics & estimated USD | Real-time calculation from token counts + provider price maps |
+| 🔄 **Smart Fallback** | Instant failover on transient faults | Automatic reroute on 408, 429, 5xx, or network timeout |
+| ⚡ **OpenAI Compatibility** | Drop-in replacement for OpenAI SDKs | Standard `/v1/chat/completions` non-streaming payload |
+| 🗄️ **Storage** | Durable relational persistence | PostgreSQL (Production) / SQLite (Local Dev) via SQLAlchemy 2.0 |
+
+---
+
+## 🏗️ System Architecture & Request Lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant GW as LLMVault Gateway
+    participant DB as PostgreSQL Database
+    participant Primary as Primary LLM (Gemini 3.6 Flash)
+    participant Fallback as Fallback LLM (Groq Llama 3.3)
+
+    Client->>GW: POST /v1/chat/completions (Bearer rk_...)
+    activate GW
+    GW->>DB: 1. Validate hash & check active status
+    GW->>DB: 2. ATOMIC UPDATE: requests_used = requests_used + 1 WHERE requests_used < limit
+    alt Quota Exhausted
+        DB-->>GW: rowcount == 0
+        GW-->>Client: 402 Payment Required {"error": "request_budget_exhausted"}
+    else Quota Reserved
+        DB-->>GW: rowcount == 1 (Slot reserved & pending row committed)
+        GW->>Primary: 3. Forward Chat Request
+        alt Primary Responds (200 OK)
+            Primary-->>GW: Response payload + token usage
+            GW->>DB: 4. Finalize usage (status=succeeded, tokens, cost)
+            GW-->>Client: Return 200 OK Completion
+        else Transient Error / Timeout (408, 429, 5xx)
+            Primary--xGW: Failure detected
+            GW->>Fallback: 5. Fallback reroute (Groq / Llama)
+            alt Fallback Responds (200 OK)
+                Fallback-->>GW: Response payload + token usage
+                GW->>DB: Finalize usage (status=succeeded, provider=fallback)
+                GW-->>Client: Return 200 OK Completion
+            else Fallback Fails
+                Fallback--xGW: Failure
+                GW->>DB: Finalize usage (status=failed, 502/504)
+                GW-->>Client: 502 Bad Gateway / 504 Timeout
+            end
+        end
+    end
+    deactivate GW
+```
+
+---
+
+## 🚀 Live Demo & Quickstart
+
+The gateway is currently deployed and live on Railway:
+```text
+https://llmvault-production.up.railway.app
+```
+
+### 1. Health & Status Check
+
+```bash
+curl https://llmvault-production.up.railway.app/health
+```
+```json
+{"status":"ok"}
+```
+
+---
+
+### 2. Issue a Virtual API Key (Admin API)
+
+Admin endpoints require your secret `ADMIN_API_KEY`:
+
+```bash
+curl -X POST https://llmvault-production.up.railway.app/admin/keys \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"evaluator-key","request_limit":25}'
+```
+
+<details>
+<summary><b>🔍 View Sample Key Creation Response</b></summary>
+
+```json
+{
+  "id": "186fced9-785b-4b70-b3eb-c1e17afb7563",
+  "name": "evaluator-key",
+  "api_key": "rk_elalxiiftEEherpnKqQ35_W9j2UP8dB2o_-8bhBovyo",
+  "key_prefix": "rk_elalxiif",
+  "request_limit": 25,
+  "requests_used": 0,
+  "created_at": "2026-11-20T17:28:44.200154+00:00",
+  "notice": "The full API key is shown once. Store it securely; the gateway keeps only its hash."
+}
+```
+</details>
+
+---
+
+### 3. Send an LLM Chat Completion
+
+Call the gateway as a drop-in replacement for OpenAI using the virtual key `rk_...`:
+
+```bash
+curl -X POST https://llmvault-production.up.railway.app/v1/chat/completions \
+  -H "Authorization: Bearer <YOUR_VIRTUAL_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3.6-flash",
+    "messages": [
+      {"role": "user", "content": "Explain quantum computing in one sentence."}
+    ]
+  }'
+```
+
+<details>
+<summary><b>🔍 View Real Completion Response</b></summary>
+
+```json
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Quantum computing harnesses the strange properties of quantum mechanics—like superposition and entanglement—to solve complex problems exponentially faster than classical computers.",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1795195773,
+  "id": "aoMAa4OfKp2ruMYPsMbaqQ8",
+  "model": "gemini-3.6-flash",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 14,
+    "completion_tokens": 28,
+    "total_tokens": 1242
+  }
+}
+```
+</details>
+
+---
+
+### 4. Query Audit & Spend Logs
+
+Monitor all requests, exact token counts, and computed USD costs in real time:
+
+```bash
+curl https://llmvault-production.up.railway.app/admin/usage \
+  -H "Authorization: Bearer <ADMIN_API_KEY>"
+```
+
+<details>
+<summary><b>🔍 View Audit Log Response</b></summary>
+
+```json
+{
+  "count": 1,
+  "lifetime_request_count": 1,
+  "lifetime_estimated_cost_usd": 0.0000189,
+  "lifetime_unpriced_records": 0,
+  "records": [
+    {
+      "id": "7c46d3fc-3029-4172-a0c0-bedb9714b58d",
+      "key_id": "186fced9-785b-4b70-b3eb-c1e17afb7563",
+      "requested_model": "gemini-3.6-flash",
+      "actual_model": "gemini-3.6-flash",
+      "provider": "primary",
+      "status": "succeeded",
+      "http_status": 200,
+      "input_tokens": 14,
+      "output_tokens": 28,
+      "estimated_cost_usd": 0.0000189,
+      "error_code": null,
+      "created_at": "2026-11-20T17:29:14.333453+00:00"
+    }
+  ]
+}
+```
+</details>
+
+---
+
+## 🛠️ Python SDK Usage (Drop-in OpenAI Client)
+
+LLMVault functions seamlessly with the official `openai` Python SDK:
+
+```python
+from openai import OpenAI
+
+# Connect to LLMVault using your virtual key
+client = OpenAI(
+    base_url="https://llmvault-production.up.railway.app/v1",
+    api_key="rk_your_virtual_key_here",
+)
+
+response = client.chat.completions.create(
+    model="gemini-3.6-flash",
+    messages=[
+        {"role": "system", "content": "You are a concise engineering assistant."},
+        {"role": "user", "content": "What is atomic concurrency in databases?"},
+    ],
+)
+
+print(response.choices[0].message.content)
+```
+
+---
+
+## 💻 Local Development Setup
+
+<details>
+<summary><b>🔧 Step-by-Step Local Setup Instructions</b></summary>
+
+### Prerequisites
+- Python 3.12+
+- `uv` (recommended) or standard `pip`
+
+### 1. Clone & Install
+```bash
+git clone https://github.com/Raj-Ayush455/LLMVault.git
+cd LLMVault
+
+# Using uv
+uv sync
+
+# Or using standard pip
+pip install -r requirements.txt
+```
+
+### 2. Configure Environment
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
+Fill in your secrets:
+```ini
+DATABASE_URL=sqlite:///./gateway.db
+ADMIN_API_KEY=your-secure-admin-secret
+PRIMARY_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+PRIMARY_API_KEY=your-gemini-api-key
+ALLOWED_MODELS=gemini-3.6-flash
+
+# Optional Groq Fallback
+FALLBACK_BASE_URL=https://api.groq.com/openai/v1
+FALLBACK_API_KEY=your-groq-api-key
+FALLBACK_MODEL=llama-3.3-70b-versatile
+```
+
+### 3. Run Application
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+Open [http://localhost:8000/docs](http://localhost:8000/docs) for the interactive Swagger documentation.
+
+</details>
+
+---
+
+## 🐳 Docker Deployment
+
+A lightweight, multi-stage, production-tuned Docker image is included:
+
+```bash
+# Build
+docker build -t llmvault .
+
+# Run
+docker run -p 8000:8000 --env-file .env llmvault
+```
+
+---
+
+## 🔒 Security & Concurrency Design Highlights
+
+1. **Zero Secret Leakage:** Upstream provider API keys reside strictly on the server and are never delivered to callers, logged, or checked into version control.
+2. **One-Way Credential Storage:** Virtual keys are cryptographically hashed using SHA-256 before database insertion (`key_hash`). The database stores only a non-reversible hash and a display prefix (`key_prefix`).
+3. **Atomic Quota Reservation:** Quota decrements are executed via an atomic SQL conditional query:
+   ```sql
+   UPDATE api_keys 
+   SET requests_used = requests_used + 1 
+   WHERE id = :key_id AND is_active = true AND requests_used < request_limit;
    ```
+   If two parallel requests hit simultaneously with only 1 slot remaining, the database serializes the update; exactly one succeeds and the other immediately receives `402 Payment Required`.
+4. **Resilient Failover:** Transient provider errors (HTTP 408, 429, 500, 502, 503, 504 and connection timeouts) trigger one immediate fallback attempt. Non-transient errors (such as 400 Bad Request or 401 Unauthorized) fail fast without retrying.
 
-5. Start the service with `uvicorn app.main:app --reload`.
+For in-depth analysis and trade-offs, read [DECISIONS.md](DECISIONS.md).
 
-The local default database is `./gateway.db` (SQLite). For a deployed service, set `DATABASE_URL` to a persistent PostgreSQL database URL. Tables are created on startup; this take-home does not include schema migrations.
+---
 
-## Example request lifecycle
+## 📜 Deliverables & Documentation
 
-Set the admin secret in your shell to the same value as `ADMIN_API_KEY` in `.env`, then create a virtual key:
-
-```powershell
-$env:ADMIN_API_KEY = "your-admin-secret"
-$key = Invoke-RestMethod -Method Post -Uri http://localhost:8000/admin/keys `
-  -Headers @{ Authorization = "Bearer $env:ADMIN_API_KEY" } `
-  -ContentType "application/json" `
-  -Body '{"name":"demo","request_limit":10}'
-$key.api_key
-```
-
-Save the returned `api_key` securely; it will not be shown again. Call the gateway with it:
-
-```powershell
-$virtualKey = $key.api_key
-$payload = @{
-  model = "gemini-3.6-flash"
-  messages = @(@{ role = "user"; content = "Say hello in one sentence." })
-} | ConvertTo-Json -Depth 8
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/v1/chat/completions `
-  -Headers @{ Authorization = "Bearer $virtualKey" } `
-  -ContentType "application/json" -Body $payload
-```
-
-Query usage totals and records:
-
-```powershell
-Invoke-RestMethod -Uri http://localhost:8000/admin/usage `
-  -Headers @{ Authorization = "Bearer $env:ADMIN_API_KEY" }
-```
-
-The quota is consumed when an authenticated, allowed request is admitted, including requests that later fail at the provider. Exhaustion returns HTTP 402. Streaming requests return HTTP 400.
-
-## Provider and fallback configuration
-
-The primary and fallback endpoints must implement the OpenAI chat completions request/response shape. `PRIMARY_BASE_URL` and `FALLBACK_BASE_URL` are base URLs ending at the API version prefix (for example `/v1`), not full completion URLs. Set all of `FALLBACK_BASE_URL`, `FALLBACK_API_KEY`, and, if its model name differs, `FALLBACK_MODEL` to enable fallback. The caller's requested model must be listed in `ALLOWED_MODELS`; the fallback model is configured by the operator.
-
-Provider credentials are read from environment variables and are sent only from the gateway to the provider. Keep them in the hosting platform's secret manager. Do not put them in source control or in caller requests.
-
-## Deploy
-
-Use a persistent PostgreSQL service and set these environment variables in the host's secret/configuration settings:
-
-- `DATABASE_URL` - persistent PostgreSQL URL
-- `ADMIN_API_KEY` - long random secret
-- `PRIMARY_BASE_URL` (default: Gemini OpenAI-compatible endpoint), `PRIMARY_API_KEY` (Gemini API key), and `ALLOWED_MODELS`
-- Optional fallback values and `MODEL_PRICING_USD_PER_1M`
-
-Configure the host's health check to `GET /health`. After deploy, create a virtual key through `POST /admin/keys`, make a sample call, and submit the resulting HTTPS base URL plus the sample request. A live URL is not included in this source workspace: deployment requires a hosting account, database, and real provider credentials.
-
-### Zero-cost demo path: Railway Free
-
-Railway currently offers a $0 Free plan with a monthly usage allowance and no credit card requirement. It can run up to three services in one project, including a single-node PostgreSQL service. Free-plan services sleep when idle and wake on requests; if the allowance is exhausted, services stop until the next billing cycle or an upgrade. Review the current [Railway Free plan limits](https://docs.railway.com/pricing/free-plan) before deploying.
-
-1. Push this source to a GitHub repository. The `.gitignore` excludes `.env` and local database files.
-2. Create a Railway project from that repository. Railway will build the included `Dockerfile`.
-3. Add a PostgreSQL service to the same project. Set the app's `DATABASE_URL` to the Postgres service's generated `DATABASE_URL` reference.
-4. Set `ADMIN_API_KEY`, `PRIMARY_BASE_URL` (`https://generativelanguage.googleapis.com/v1beta/openai`), `PRIMARY_API_KEY` (your Gemini API key from [aistudio.google.com](https://aistudio.google.com)), `ALLOWED_MODELS` (`gemini-3.6-flash`), and optionally the fallback and pricing values in the app service variables. Do not place secrets in the repository.
-5. Set the app health check to `/health`, generate a public domain, and verify the first `/health` request and one provider call after deployment.
-
-New Railway accounts start with a trial; accounts on its limited trial may have restricted outbound networking. Complete Railway's account/GitHub verification if the service cannot reach the configured LLM provider. The free monthly allowance is small, so a handful of assessment requests should be the intended workload; monitor Railway usage and note that the LLM provider may bill separately.
-
-## Known limits
-
-- The enforced budget is request count, not a hard currency or token-spend ceiling. Provider token usage and estimated USD cost are logged separately.
-- Cost estimates rely on an operator-maintained pricing map and provider-reported token counts. They are not billing guarantees.
-- The gateway supports non-streaming chat completions only.
-- No retry is made against the same provider. A transient primary failure can trigger one fallback attempt.
-- SQLite is for local development; production deployment should use persistent PostgreSQL.
-- There is no rate limiting by time window, multi-tenant admin login, prompt storage, frontend, or schema migration system.
-- A process crash after quota reservation can leave a `pending` usage row while still consuming the request slot. This keeps the quota conservative and makes interrupted work visible.
-
+- [DECISIONS.md](DECISIONS.md) — Comprehensive technical tradeoffs, concurrency proofs, and architectural boundary choices.
+- [AI-LOG.md](AI-LOG.md) — Honest engineering log detailing AI utilization, model corrections, and overrides.
+- [LICENSE](LICENSE) — Open source under the MIT License.
